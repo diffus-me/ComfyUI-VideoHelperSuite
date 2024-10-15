@@ -14,6 +14,7 @@ from string import Template
 import itertools
 import functools
 
+import execution_context
 import folder_paths
 from .logger import logger
 from .image_latent_nodes import *
@@ -45,11 +46,11 @@ def gen_format_widgets(video_format):
                 yield item
                 video_format[k] = item[0]
 
-def get_video_formats():
+def get_video_formats(context: execution_context.ExecutionContext):
     formats = []
-    for format_name in folder_paths.get_filename_list("VHS_video_formats"):
+    for format_name in folder_paths.get_filename_list(context, "VHS_video_formats"):
         format_name = format_name[:-5]
-        video_format_path = folder_paths.get_full_path("VHS_video_formats", format_name + ".json")
+        video_format_path = folder_paths.get_full_path(context, "VHS_video_formats", format_name + ".json")
         with open(video_format_path, 'r') as stream:
             video_format = json.load(stream)
         if "gifski_pass" in video_format and gifski_path is None:
@@ -62,8 +63,8 @@ def get_video_formats():
             formats.append("video/" + format_name)
     return formats
 
-def get_format_widget_defaults(format_name):
-    video_format_path = folder_paths.get_full_path("VHS_video_formats", format_name + ".json")
+def get_format_widget_defaults(context: execution_context.ExecutionContext, format_name):
+    video_format_path = folder_paths.get_full_path(context, "VHS_video_formats", format_name + ".json")
     with open(video_format_path, 'r') as stream:
         video_format = json.load(stream)
     results = {}
@@ -80,8 +81,8 @@ def get_format_widget_defaults(format_name):
     return results
 
 
-def apply_format_widgets(format_name, kwargs):
-    video_format_path = folder_paths.get_full_path("VHS_video_formats", format_name + ".json")
+def apply_format_widgets(context: execution_context.ExecutionContext, format_name, kwargs):
+    video_format_path = folder_paths.get_full_path(context, "VHS_video_formats", format_name + ".json")
     with open(video_format_path, 'r') as stream:
         video_format = json.load(stream)
     for w in gen_format_widgets(video_format):
@@ -101,15 +102,15 @@ def tensor_to_shorts(tensor):
 def tensor_to_bytes(tensor):
     return tensor_to_int(tensor, 8).astype(np.uint8)
 
-def ffmpeg_process(args, video_format, video_metadata, file_path, env):
+def ffmpeg_process(args, video_format, video_metadata, file_path, env, context: execution_context.ExecutionContext):
 
     res = None
     frame_data = yield
     total_frames_output = 0
     if video_format.get('save_metadata', 'False') != 'False':
-        os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+        os.makedirs(folder_paths.get_temp_directory(context.user_hash), exist_ok=True)
         metadata = json.dumps(video_metadata)
-        metadata_path = os.path.join(folder_paths.get_temp_directory(), "metadata.txt")
+        metadata_path = os.path.join(folder_paths.get_temp_directory(context.user_hash), "metadata.txt")
         #metadata from file should  escape = ; # \ and newline
         metadata = metadata.replace("\\","\\\\")
         metadata = metadata.replace(";","\\;")
@@ -162,7 +163,7 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env):
     if len(res) > 0:
         print(res.decode("utf-8"), end="", file=sys.stderr)
 
-def gifski_process(args, video_format, file_path, env):
+def gifski_process(args, video_format, file_path, env, context: execution_context.ExecutionContext):
     frame_data = yield
     with subprocess.Popen(args + video_format['main_pass'] + ['-f', 'yuv4mpegpipe', '-'],
                           stderr=subprocess.PIPE, stdin=subprocess.PIPE,
@@ -204,8 +205,8 @@ def to_pingpong(inp):
 
 class VideoCombine:
     @classmethod
-    def INPUT_TYPES(s):
-        ffmpeg_formats = get_video_formats()
+    def INPUT_TYPES(s, context: execution_context.ExecutionContext):
+        ffmpeg_formats = get_video_formats(context)
         return {
             "required": {
                 "images": (imageOrLatent,),
@@ -227,7 +228,8 @@ class VideoCombine:
             "hidden": {
                 "prompt": "PROMPT",
                 "extra_pnginfo": "EXTRA_PNGINFO",
-                "unique_id": "UNIQUE_ID"
+                "unique_id": "UNIQUE_ID",
+                "context": "EXECUTION_CONTEXT"
             },
         }
 
@@ -253,7 +255,8 @@ class VideoCombine:
         unique_id=None,
         manual_format_widgets=None,
         meta_batch=None,
-        vae=None
+        vae=None,
+        context: execution_context.ExecutionContext = None,
     ):
         if latents is not None:
             images = latents
@@ -291,9 +294,9 @@ class VideoCombine:
             images = iter(images)
         # get output information
         output_dir = (
-            folder_paths.get_output_directory()
+            folder_paths.get_output_directory(context.user_hash)
             if save_output
-            else folder_paths.get_temp_directory()
+            else folder_paths.get_temp_directory(context.user_hash)
         )
         (
             full_output_folder,
@@ -389,7 +392,7 @@ class VideoCombine:
                 else:
                     manual_format_widgets = {}
             if kwargs is None:
-                kwargs = get_format_widget_defaults(format_ext)
+                kwargs = get_format_widget_defaults(context, format_ext)
                 missing = {}
                 for k in kwargs.keys():
                     if k in manual_format_widgets:
@@ -399,7 +402,7 @@ class VideoCombine:
                 if len(missing) > 0:
                     logger.warn("Extra format values were not provided, the following defaults will be used: " + str(kwargs) + "\nThis is likely due to usage of ComfyUI-to-python. These values can be manually set by supplying a manual_format_widgets argument")
 
-            video_format = apply_format_widgets(format_ext, kwargs)
+            video_format = apply_format_widgets(context, format_ext, kwargs)
             has_alpha = first_image.shape[-1] == 4
             dim_alignment = video_format.get("dim_alignment", 8)
             if (first_image.shape[1] % dim_alignment) or (first_image.shape[0] % dim_alignment):
@@ -463,7 +466,7 @@ class VideoCombine:
                     #very long gifs probably shouldn't be encouraged
                     raise Exception("Formats which require a pre_pass are incompatible with Batch Manager.")
                 images = [b''.join(images)]
-                os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+                os.makedirs(folder_paths.get_temp_directory(context.user_hash), exist_ok=True)
                 pre_pass_args = args[:13] + video_format['pre_pass']
                 try:
                     subprocess.run(pre_pass_args, input=images[0], env=env,
@@ -476,10 +479,10 @@ class VideoCombine:
 
             if output_process is None:
                 if 'gifski_pass' in video_format:
-                    output_process = gifski_process(args, video_format, file_path, env)
+                    output_process = gifski_process(args, video_format, file_path, env, context)
                 else:
                     args += video_format['main_pass'] + bitrate_arg
-                    output_process = ffmpeg_process(args, video_format, video_metadata, file_path, env)
+                    output_process = ffmpeg_process(args, video_format, video_metadata, file_path, env, context)
                 #Proceed to first yield
                 output_process.send(None)
                 if meta_batch is not None:
@@ -577,35 +580,39 @@ class LoadAudio:
             "required": {
                 "audio_file": ("STRING", {"default": "input/", "vhs_path_extensions": ['wav','mp3','ogg','m4a','flac']}),
                 },
-            "optional" : {"seek_seconds": ("FLOAT", {"default": 0, "min": 0})}
+            "optional" : {"seek_seconds": ("FLOAT", {"default": 0, "min": 0})},
+            "hidden": {
+                "context": "EXECUTION_CONTEXT"
+            }
         }
 
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢/audio"
     FUNCTION = "load_audio"
-    def load_audio(self, audio_file, seek_seconds):
+    def load_audio(self, audio_file, seek_seconds, context: execution_context.ExecutionContext):
         audio_file = strip_path(audio_file)
-        if audio_file is None or validate_path(audio_file) != True:
+        if audio_file is None or validate_path(context.user_hash, audio_file) != True:
             raise Exception("audio_file is not a valid path: " + audio_file)
         if is_url(audio_file):
-            audio_file = try_download_video(audio_file) or audio_file
+            audio_file = try_download_video(audio_file, context.user_hash) or audio_file
         #Eagerly fetch the audio since the user must be using it if the
         #node executes, unlike Load Video
         return (get_audio(audio_file, start_time=seek_seconds),)
 
     @classmethod
-    def IS_CHANGED(s, audio_file, seek_seconds):
-        return hash_path(audio_file)
+    def IS_CHANGED(s, audio_file, seek_seconds, context: execution_context.ExecutionContext):
+        return hash_path(context.user_hash, audio_file)
 
     @classmethod
     def VALIDATE_INPUTS(s, audio_file, **kwargs):
-        return validate_path(audio_file, allow_none=True)
+        context = kwargs["context"]
+        return validate_path(context.user_hash, audio_file, allow_none=True)
 
 class LoadAudioUpload:
     @classmethod
-    def INPUT_TYPES(s):
-        input_dir = folder_paths.get_input_directory()
+    def INPUT_TYPES(s, context: execution_context.ExecutionContext):
+        input_dir = folder_paths.get_input_directory(context.user_hash)
         files = []
         for f in os.listdir(input_dir):
             if os.path.isfile(os.path.join(input_dir, f)):
@@ -617,6 +624,9 @@ class LoadAudioUpload:
                     "start_time": ("FLOAT" , {"default": 0, "min": 0, "max": 10000000, "step": 0.01}),
                     "duration": ("FLOAT" , {"default": 0, "min": 0, "max": 10000000, "step": 0.01}),
                      },
+                "hidden": {
+                    "context": "EXECUTION_CONTEXT"
+                    },
                 }
 
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢/audio"
@@ -626,21 +636,24 @@ class LoadAudioUpload:
     FUNCTION = "load_audio"
 
     def load_audio(self, start_time, duration, **kwargs):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(kwargs['audio']))
-        if audio_file is None or validate_path(audio_file) != True:
+        context = kwargs["context"]
+        audio_file = folder_paths.get_annotated_filepath(strip_path(kwargs['audio']), context)
+        if audio_file is None or validate_path(context.user_hash, audio_file) != True:
             raise Exception("audio_file is not a valid path: " + audio_file)
         
         return (get_audio(audio_file, start_time, duration),)
 
     @classmethod
-    def IS_CHANGED(s, audio, start_time, duration):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(audio))
-        return hash_path(audio_file)
+    def IS_CHANGED(s, audio, start_time, duration, **kwargs):
+        context = kwargs["context"]
+        audio_file = folder_paths.get_annotated_filepath(strip_path(audio), context.user_hash)
+        return hash_path(context.user_hash, audio_file)
 
     @classmethod
     def VALIDATE_INPUTS(s, audio, **kwargs):
-        audio_file = folder_paths.get_annotated_filepath(strip_path(audio))
-        return validate_path(audio_file, allow_none=True)
+        context = kwargs["context"]
+        audio_file = folder_paths.get_annotated_filepath(strip_path(audio), context.user_hash)
+        return validate_path(context.user_hash, audio_file, allow_none=True)
 class AudioToVHSAudio:
     """Legacy method for external nodes that utilized VHS_AUDIO,
     VHS_AUDIO is deprecated as a format and should no longer be used"""

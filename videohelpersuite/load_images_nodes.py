@@ -120,8 +120,8 @@ def load_images(directory: str, image_load_cap: int = 0, skip_first_images: int 
 
 class LoadImagesFromDirectoryUpload:
     @classmethod
-    def INPUT_TYPES(s):
-        input_dir = folder_paths.get_input_directory()
+    def INPUT_TYPES(s, user_hash: str):
+        input_dir = folder_paths.get_input_directory(user_hash)
         directories = []
         for item in os.listdir(input_dir):
             if not os.path.isfile(os.path.join(input_dir, item)) and item != "clipspace":
@@ -137,7 +137,8 @@ class LoadImagesFromDirectoryUpload:
                 "meta_batch": ("VHS_BatchManager",),
             },
             "hidden": {
-                "unique_id": "UNIQUE_ID"
+                "unique_id": "UNIQUE_ID",
+                "context": "EXECUTION_CONTEXT"
             },
         }
     
@@ -148,17 +149,20 @@ class LoadImagesFromDirectoryUpload:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
     def load_images(self, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return load_images(directory, **kwargs)
     
     @classmethod
     def IS_CHANGED(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return is_changed_load_images(directory, **kwargs)
 
     @classmethod
     def VALIDATE_INPUTS(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return validate_load_images(directory)
 
 

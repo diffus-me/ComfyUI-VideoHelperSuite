@@ -83,19 +83,19 @@ if gifski_path is None:
 ytdl_path = os.environ.get("VHS_YTDL", None) or shutil.which('yt-dlp') \
         or shutil.which('youtube-dl')
 download_history = {}
-def try_download_video(url):
+def try_download_video(url, user_hash):
     if ytdl_path is None:
         return None
     if url in download_history:
         return download_history[url]
-    os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+    os.makedirs(folder_paths.get_temp_directory(user_hash), exist_ok=True)
     #Format information could be added to only download audio for Load Audio,
     #but this gets hairy if same url is also used for video.
     #Best to just always keep defaults
     #dl_format = ['-f', 'ba'] if is_audio else []
     try:
         res = subprocess.run([ytdl_path, "--print", "after_move:filepath",
-                              "-P", folder_paths.get_temp_directory(), url],
+                              "-P", folder_paths.get_temp_directory(user_hash), url],
                              capture_output=True, check=True)
         #strip newline
         file = res.stdout.decode('utf-8')[:-1]
@@ -106,7 +106,22 @@ def try_download_video(url):
     download_history[url] = file
     return file
 
-def is_safe_path(path):
+
+def in_directory(file, directory, allow_symlink=False):
+    directory = os.path.abspath(directory)
+    file = os.path.abspath(file)
+
+    if not allow_symlink and os.path.islink(file):
+        return False
+
+    return os.path.commonprefix([file, directory]) == directory
+
+
+def is_safe_path(path, user_hash):
+    output_directory = os.path.abspath(folder_paths.get_output_directory(user_hash))
+    if not in_directory(path, output_directory):
+        return False
+
     if "VHS_STRICT_PATHS" not in os.environ:
         return True
     basedir = os.path.abspath('.')
@@ -267,7 +282,7 @@ def strip_path(path):
     if path.endswith("\""):
         path = path[:-1]
     return path
-def hash_path(path):
+def hash_path(path, user_hash):
     if path is None:
         return "input"
     if is_url(path):
@@ -275,17 +290,17 @@ def hash_path(path):
     return calculate_file_hash(strip_path(path))
 
 
-def validate_path(path, allow_none=False, allow_url=True):
+def validate_path(user_hash, path, allow_none=False, allow_url=True):
     if path is None:
         return allow_none
     if is_url(path):
         #Probably not feasible to check if url resolves here
         if not allow_url:
             return "URLs are unsupported for this path"
-        return is_safe_path(path)
+        return is_safe_path(path, user_hash)
     if not os.path.isfile(strip_path(path)):
         return "Invalid file path: {}".format(path)
-    return is_safe_path(path)
+    return is_safe_path(path, user_hash)
 
 
 def validate_index(index: int, length: int=0, is_range: bool=False, allow_negative=False, allow_missing=False) -> int:

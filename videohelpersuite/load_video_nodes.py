@@ -232,8 +232,8 @@ def load_video_cv(video: str, force_rate: int, force_size: str,
 
 class LoadVideoUpload:
     @classmethod
-    def INPUT_TYPES(s):
-        input_dir = folder_paths.get_input_directory()
+    def INPUT_TYPES(s, user_hash: str):
+        input_dir = folder_paths.get_input_directory(user_hash)
         files = []
         for f in os.listdir(input_dir):
             if os.path.isfile(os.path.join(input_dir, f)):
@@ -255,9 +255,10 @@ class LoadVideoUpload:
                     "vae": ("VAE",),
                 },
                 "hidden": {
-                    "unique_id": "UNIQUE_ID"
+                    "unique_id": "UNIQUE_ID",
+                    "context": "EXECUTION_CONTEXT"
                 },
-                }
+            }
 
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
@@ -267,17 +268,21 @@ class LoadVideoUpload:
     FUNCTION = "load_video"
 
     def load_video(self, **kwargs):
-        kwargs['video'] = folder_paths.get_annotated_filepath(strip_path(kwargs['video']))
+        user_hash = kwargs["context"].user_hash
+        kwargs['video'] = folder_paths.get_annotated_filepath(strip_path(kwargs['video']), user_hash)
         return load_video_cv(**kwargs)
 
     @classmethod
     def IS_CHANGED(s, video, **kwargs):
-        image_path = folder_paths.get_annotated_filepath(video)
+        user_hash = kwargs["context"].user_hash
+        image_path = folder_paths.get_annotated_filepath(video, user_hash)
         return calculate_file_hash(image_path)
 
     @classmethod
-    def VALIDATE_INPUTS(s, video, force_size, **kwargs):
-        if not folder_paths.exists_annotated_filepath(video):
+    def VALIDATE_INPUTS(s, **kwargs):
+        user_hash = kwargs["context"].user_hash
+        video = kwargs["video"].user_hash
+        if not folder_paths.exists_annotated_filepath(video, user_hash):
             return "Invalid video file: {}".format(video)
         return True
 
@@ -301,7 +306,8 @@ class LoadVideoPath:
                 "vae": ("VAE",),
             },
             "hidden": {
-                "unique_id": "UNIQUE_ID"
+                "unique_id": "UNIQUE_ID",
+                "context": "EXECUTION_CONTEXT"
             },
         }
 
@@ -313,16 +319,19 @@ class LoadVideoPath:
     FUNCTION = "load_video"
 
     def load_video(self, **kwargs):
-        if kwargs['video'] is None or validate_path(kwargs['video']) != True:
+        user_hash = kwargs["context"].user_hash
+        if kwargs['video'] is None or validate_path(user_hash, kwargs['video']) != True:
             raise Exception("video is not a valid path: " + kwargs['video'])
         if is_url(kwargs['video']):
-            kwargs['video'] = try_download_video(kwargs['video']) or kwargs['video']
+            kwargs['video'] = try_download_video(kwargs['video'], user_hash) or kwargs['video']
         return load_video_cv(**kwargs)
 
     @classmethod
     def IS_CHANGED(s, video, **kwargs):
-        return hash_path(video)
+        user_hash = kwargs["context"].user_hash
+        return hash_path(video, user_hash)
 
     @classmethod
     def VALIDATE_INPUTS(s, video, **kwargs):
-        return validate_path(video, allow_none=True)
+        user_hash = kwargs["context"].user_hash
+        return validate_path(user_hash, video, allow_none=True)
