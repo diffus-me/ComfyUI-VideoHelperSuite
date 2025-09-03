@@ -1,5 +1,7 @@
 import os
 import hashlib
+import pathlib
+
 import numpy as np
 import torch
 from PIL import Image, ImageOps
@@ -120,8 +122,8 @@ def load_images(directory: str, image_load_cap: int = 0, skip_first_images: int 
 
 class LoadImagesFromDirectoryUpload:
     @classmethod
-    def INPUT_TYPES(s):
-        input_dir = folder_paths.get_input_directory()
+    def INPUT_TYPES(s, user_hash: str):
+        input_dir = folder_paths.get_input_directory(user_hash)
         directories = []
         for item in os.listdir(input_dir):
             if not os.path.isfile(os.path.join(input_dir, item)) and item != "clipspace":
@@ -137,7 +139,8 @@ class LoadImagesFromDirectoryUpload:
                 "meta_batch": ("VHS_BatchManager",),
             },
             "hidden": {
-                "unique_id": "UNIQUE_ID"
+                "unique_id": "UNIQUE_ID",
+                "context": "EXECUTION_CONTEXT"
             },
         }
     
@@ -148,17 +151,20 @@ class LoadImagesFromDirectoryUpload:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
     def load_images(self, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return load_images(directory, **kwargs)
     
     @classmethod
     def IS_CHANGED(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return is_changed_load_images(directory, **kwargs)
 
     @classmethod
     def VALIDATE_INPUTS(s, directory: str, **kwargs):
-        directory = folder_paths.get_annotated_filepath(strip_path(directory))
+        context = kwargs["context"]
+        directory = folder_paths.get_annotated_filepath(strip_path(directory), context.user_hash)
         return validate_load_images(directory)
 
 
@@ -176,7 +182,8 @@ class LoadImagesFromDirectoryPath:
                 "meta_batch": ("VHS_BatchManager",),
             },
             "hidden": {
-                "unique_id": "UNIQUE_ID"
+                "unique_id": "UNIQUE_ID",
+                "context": "EXECUTION_CONTEXT"
             },
         }
     
@@ -187,7 +194,9 @@ class LoadImagesFromDirectoryPath:
     CATEGORY = "Video Helper Suite 🎥🅥🅗🅢"
 
     def load_images(self, directory: str, **kwargs):
-        directory = strip_path(directory)
+        context = kwargs["context"]
+        input_dir = folder_paths.get_input_directory(context.user_hash)
+        directory = str(pathlib.Path(input_dir, strip_path(directory)))
         if directory is None or validate_load_images(directory) != True:
             raise Exception("directory is not valid: " + directory)
 

@@ -100,19 +100,19 @@ if gifski_path is None:
 ytdl_path = os.environ.get("VHS_YTDL", None) or shutil.which('yt-dlp') \
         or shutil.which('youtube-dl')
 download_history = {}
-def try_download_video(url):
+def try_download_video(url, user_hash):
     if ytdl_path is None:
         return None
     if url in download_history:
         return download_history[url]
-    os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
+    os.makedirs(folder_paths.get_temp_directory(user_hash), exist_ok=True)
     #Format information could be added to only download audio for Load Audio,
     #but this gets hairy if same url is also used for video.
     #Best to just always keep defaults
     #dl_format = ['-f', 'ba'] if is_audio else []
     try:
         res = subprocess.run([ytdl_path, "--print", "after_move:filepath",
-                              "-P", folder_paths.get_temp_directory(), url],
+                              "-P", folder_paths.get_temp_directory(user_hash), url],
                              capture_output=True, check=True)
         #strip newline
         file = res.stdout.decode(*ENCODE_ARGS)[:-1]
@@ -123,7 +123,19 @@ def try_download_video(url):
     download_history[url] = file
     return file
 
-def is_safe_path(path, strict=False):
+def in_directory(file, directory, allow_symlink=False):
+    directory = os.path.abspath(directory)
+    file = os.path.abspath(file)
+
+    if not allow_symlink and os.path.islink(file):
+        return False
+
+    return os.path.commonprefix([file, directory]) == directory
+
+def is_safe_path(path, strict=False, user_hash: str=""):
+    output_directory = os.path.abspath(folder_paths.get_output_directory(user_hash))
+    if not in_directory(path, output_directory):
+        return False
     if "VHS_STRICT_PATHS" not in os.environ and not strict:
         return True
     basedir = os.path.abspath('.')
@@ -170,11 +182,13 @@ def requeue_workflow_unchecked():
     currently_running = prompt_queue.currently_running
     value = next(iter(currently_running.values()))
     
-    # Handle both old (5 values) and new (6 values) ComfyUI versions
-    if len(value) == 6:
-        (_, prompt_id, prompt, extra_data, outputs_to_execute, _) = value
+    # Handle both old (6 values) and new (7 values) ComfyUI versions
+    if len(value) == 7:
+        (_, prompt_id, prompt, extra_data, outputs_to_execute, sensitive, exec_context) = value
     else:
-        (_, prompt_id, prompt, extra_data, outputs_to_execute) = value
+        (_, prompt_id, prompt, extra_data, outputs_to_execute, exec_context) = value
+        sensitive = {}
+
     
     #Ensure batch_managers are marked stale
     prompt = prompt.copy()
@@ -187,9 +201,7 @@ def requeue_workflow_unchecked():
     number = -server.PromptServer.instance.number
     server.PromptServer.instance.number += 1
     prompt_id = str(server.uuid.uuid4())
-    # Put back with 6 elements to match what ComfyUI expects
-    sensitive = value[5] if len(value) > 5 else {}
-    prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute, sensitive))
+    prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute, sensitive, exec_context))
 
 requeue_guard = [None, 0, 0, {}]
 
@@ -199,11 +211,12 @@ def requeue_workflow(requeue_required=(-1,True)):
     
     value = next(iter(prompt_queue.currently_running.values()))
     
-    # Handle both old (5 values) and new (6 values) ComfyUI versions
-    if len(value) == 6:
-        (run_number, _, prompt, extra_data, outputs_to_execute, _) = value
+    # Handle both old (6 values) and new (7 values) ComfyUI versions
+    if len(value) == 7:
+        (run_number, _, prompt, extra_data, outputs_to_execute, sensitive, exec_context) = value
     else:
-        (run_number, _, prompt, extra_data, outputs_to_execute) = value
+        (run_number, _, prompt, extra_data, outputs_to_execute, exec_context) = value
+        sensitive = {}
     
     if requeue_guard[0] != run_number:
         #Calculate a count of how many outputs are managed by a batch manager
@@ -301,7 +314,9 @@ def strip_path(path):
     if path.endswith("\""):
         path = path[:-1]
     return path
-def hash_path(path):
+def hash_path(path, user_hash):
+    if not is_safe_path(path, True, user_hash):
+        return "input"
     if path is None:
         return "input"
     if is_url(path):
@@ -311,17 +326,17 @@ def hash_path(path):
     return calculate_file_hash(strip_path(path))
 
 
-def validate_path(path, allow_none=False, allow_url=True):
+def validate_path(user_hash, path, allow_none=False, allow_url=True):
     if path is None:
         return allow_none
     if is_url(path):
         #Probably not feasible to check if url resolves here
         if not allow_url:
             return "URLs are unsupported for this path"
-        return is_safe_path(path)
+        return is_safe_path(path, user_hash)
     if not os.path.isfile(strip_path(path)):
         return "Invalid file path: {}".format(path)
-    return is_safe_path(path)
+    return is_safe_path(path, user_hash)
 
 
 def validate_index(index: int, length: int=0, is_range: bool=False, allow_negative=False, allow_missing=False) -> int:

@@ -1,3 +1,4 @@
+import execution_context
 import server
 import folder_paths
 import os
@@ -18,20 +19,21 @@ web = server.web
 @server.PromptServer.instance.routes.get("/viewvideo")
 async def view_video(request):
     query = request.rel_url.query
-    path_res = await resolve_path(query)
+    context = execution_context.ExecutionContext(request)
+    path_res = await resolve_path(context, query)
     if isinstance(path_res, web.Response):
         return path_res
     file, filename, output_dir = path_res
 
     if ffmpeg_path is None:
         #Don't just return file, that provides  arbitrary read access to any file
-        if is_safe_path(output_dir, strict=True):
+        if is_safe_path(output_dir, strict=True, user_hash=context.user_hash):
             return web.FileResponse(path=file)
 
     frame_rate = query.get('frame_rate', 8)
     if query.get('format', 'video') == "folder":
-        os.makedirs(folder_paths.get_temp_directory(), exist_ok=True)
-        concat_file = os.path.join(folder_paths.get_temp_directory(), "image_sequence_preview.txt")
+        os.makedirs(folder_paths.get_temp_directory(user_hash=context.user_hash), exist_ok=True)
+        concat_file = os.path.join(folder_paths.get_temp_directory(user_hash=context.user_hash), "image_sequence_preview.txt")
         skip_first_images = int(query.get('skip_first_images', 0))
         select_every_nth = int(query.get('select_every_nth', 1)) or 1
         valid_images = get_sorted_dir_files_from_directory(file, skip_first_images, select_every_nth, FolderOfImages.IMG_EXTENSIONS)
@@ -134,7 +136,8 @@ async def view_video(request):
 @server.PromptServer.instance.routes.get("/vhs/viewaudio")
 async def view_audio(request):
     query = request.rel_url.query
-    path_res = await resolve_path(query)
+    context = execution_context.ExecutionContext(request)
+    path_res = await resolve_path(context, query)
     if isinstance(path_res, web.Response):
         return path_res
     file, filename, output_dir = path_res
@@ -178,7 +181,8 @@ query_cache = {}
 @server.PromptServer.instance.routes.get("/vhs/queryvideo")
 async def query_video(request):
     query = request.rel_url.query
-    filepath = await resolve_path(query)
+    context = execution_context.ExecutionContext(request)
+    filepath = await resolve_path(context, query)
     #TODO: cache lookup
     if isinstance(filepath, web.Response):
         return filepath
@@ -209,7 +213,8 @@ async def query_video(request):
                 source['alpha'] = 'a' in frame.format.name
                 source['frames'] = stream.metadata.get('NUMBER_OF_FRAMES', round(source['duration'] * source['fps']))
                 query_cache[filepath] = (os.stat(filepath).st_mtime, source)
-        except Exception:
+        except Exception as e:
+            print(f"*** query video: {e}")
             pass
     if not 'frames' in source:
         return web.json_response({})
@@ -222,18 +227,18 @@ async def query_video(request):
     loaded['frames'] = round(loaded['duration'] * loaded['fps'])
     return web.json_response({'source': source, 'loaded': loaded})
 
-async def resolve_path(query):
+async def resolve_path(context: execution_context.ExecutionContext, query):
     if "filename" not in query:
-        return web.Response(status=204)
+        return web.Response(status=204, text='"filename" not in query')
     filename = query["filename"]
 
     #Path code misformats urls on windows and must be skipped
     if is_url(filename):
-        file = await asyncio.to_thread(try_download_video, filename) or file
+        file = await asyncio.to_thread(try_download_video, filename, context.user_hash) or file
         filname, output_dir = os.path.split(file)
         return file, filename, output_dir
     else:
-        filename, output_dir = folder_paths.annotated_filepath(filename)
+        filename, output_dir = folder_paths.annotated_filepath(filename, user_hash=context.user_hash)
 
         type = query.get("type", "output")
         if type == "path":
@@ -241,13 +246,13 @@ async def resolve_path(query):
             #NOTE: output_dir may be empty, but non-None
             output_dir, filename = os.path.split(strip_path(filename))
         if output_dir is None:
-            output_dir = folder_paths.get_directory_by_type(type)
+            output_dir = folder_paths.get_directory_by_type(type, user_hash=context.user_hash)
 
         if output_dir is None:
-            return web.Response(status=204)
+            return web.Response(status=204, text="output_dir is None")
 
-        if not is_safe_path(output_dir):
-            return web.Response(status=204)
+        if not is_safe_path(output_dir, user_hash=context.user_hash):
+            return web.Response(status=204, text="not is_safe_path(output_dir, user_hash=context.user_hash)")
 
         if "subfolder" in query:
             output_dir = os.path.join(output_dir, query["subfolder"])
@@ -256,39 +261,40 @@ async def resolve_path(query):
         file = os.path.join(output_dir, filename)
 
         if not os.path.exists(file):
-            return web.Response(status=204)
+            return web.Response(status=204, text="not os.path.exists({file})")
         if query.get('format', 'video') == 'folder':
             if not os.path.isdir(file):
-                return web.Response(status=204)
+                return web.Response(status=204, text="not os.path.isdir({file})")
         else:
             if not os.path.isfile(file) and not validate_sequence(file):
-                    return web.Response(status=204)
+                return web.Response(status=204, text="not os.path.isfile({file}) and not validate_sequence({file})")
         return file, filename, output_dir
 
 @server.PromptServer.instance.routes.get("/vhs/getpath")
 @server.PromptServer.instance.routes.get("/getpath")
 async def get_path(request):
-    query = request.rel_url.query
-    if "path" not in query:
-        return web.Response(status=204)
-    #NOTE: path always ends in `/`, so this is functionally an lstrip
-    path = os.path.abspath(strip_path(query["path"]))
-
-    if not os.path.exists(path) or not is_safe_path(path):
-        return web.json_response([])
-
-    #Use get so None is default instead of keyerror
-    valid_extensions = query.get("extensions")
-    valid_items = []
-    for item in os.scandir(path):
-        try:
-            if item.is_dir():
-                valid_items.append(item.name + "/")
-                continue
-            if valid_extensions is None or item.name.split(".")[-1].lower() in valid_extensions:
-                valid_items.append(item.name)
-        except OSError:
-            #Broken symlinks can throw a very unhelpful "Invalid argument"
-            pass
-    valid_items.sort(key=lambda f: os.stat(os.path.join(path,f)).st_mtime)
-    return web.json_response(valid_items)
+    # query = request.rel_url.query
+    # if "path" not in query:
+    #     return web.Response(status=204)
+    # #NOTE: path always ends in `/`, so this is functionally an lstrip
+    # path = os.path.abspath(strip_path(query["path"]))
+    # context = execution_context.ExecutionContext(request)
+    # if not os.path.exists(path) or not is_safe_path(path, context.user_hash):
+    #     return web.json_response([])
+    #
+    # #Use get so None is default instead of keyerror
+    # valid_extensions = query.get("extensions")
+    # valid_items = []
+    # for item in os.scandir(path):
+    #     try:
+    #         if item.is_dir():
+    #             valid_items.append(item.name + "/")
+    #             continue
+    #         if valid_extensions is None or item.name.split(".")[-1].lower() in valid_extensions:
+    #             valid_items.append(item.name)
+    #     except OSError:
+    #         #Broken symlinks can throw a very unhelpful "Invalid argument"
+    #         pass
+    # valid_items.sort(key=lambda f: os.stat(os.path.join(path,f)).st_mtime)
+    # return web.json_response(valid_items)
+    return web.json_response([])

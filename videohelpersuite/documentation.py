@@ -606,7 +606,8 @@ def format_descriptions(nodes):
     for k in descriptions:
         if k.endswith("_collapsed"):
             k = k[:-len("_collapsed")]
-        nodes[k].DESCRIPTION = as_html(descriptions[k])
+        if k in nodes:
+            nodes[k].DESCRIPTION = as_html(descriptions[k])
     undocumented_nodes = []
     for k in nodes:
         if not hasattr(nodes[k], "DESCRIPTION"):
