@@ -138,7 +138,7 @@ def ffmpeg_process(args, video_format, video_metadata, file_path, env, context: 
     res = None
     frame_data = yield
     total_frames_output = 0
-    if video_format.get('save_metadata', 'False') != 'False':
+    if video_format.get('save_metadata', 'False') != 'False' and not context.disable_pnginfo:
         os.makedirs(folder_paths.get_temp_directory(context.user_hash), exist_ok=True)
         metadata = json.dumps(video_metadata)
         metadata_path = os.path.join(folder_paths.get_temp_directory(context.user_hash), "metadata.txt")
